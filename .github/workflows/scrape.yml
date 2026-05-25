@@ -1,0 +1,40 @@
+name: YouTube Trend Scraper
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Which task to run"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - fetch
+          - topics
+          - analyze
+          - channels
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: backend/go.sum
+
+      - name: Build scraper
+        working-directory: backend
+        run: go build -o ../scraper ./cmd/scraper
+
+      - name: Run scraper
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: ./scraper ${{ github.event.inputs.task || 'all' }}
