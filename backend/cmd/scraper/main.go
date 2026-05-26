@@ -31,7 +31,7 @@ func main() {
 	vs := store.NewVideoStore(pool)
 	ts := store.NewTopicStore(pool)
 	cs := store.NewChannelStore(pool)
-	as := store.NewAnalysisStore(pool)
+	// as := store.NewAnalysisStore(pool)
 	yt := scraper.NewYouTubeClient(cfg.YouTubeAPIKey)
 
 	switch cmd {
@@ -44,9 +44,9 @@ func main() {
 			log.Fatal(err)
 		}
 	case "analyze":
-		if err := scraper.RunAnalyzeThumbnails(ctx, vs, as); err != nil {
-			log.Fatal(err)
-		}
+		// if err := scraper.RunAnalyzeThumbnails(ctx, vs, as); err != nil {
+		// 	log.Fatal(err)
+		// }
 	case "channels":
 		if err := scraper.RunTrackChannels(ctx, yt, cs); err != nil {
 			log.Fatal(err)
@@ -54,7 +54,7 @@ func main() {
 	case "all":
 		scraper.RunFetchTrending(ctx, yt, vs, cs)
 		scraper.RunClusterTopics(ctx, cfg.DeepSeekAPIKey, vs, ts)
-		scraper.RunAnalyzeThumbnails(ctx, vs, as)
+		// scraper.RunAnalyzeThumbnails(ctx, vs, as)
 		scraper.RunTrackChannels(ctx, yt, cs)
 	default:
 		log.Fatalf("Unknown command: %s. Use: fetch, topics, analyze, channels, all", cmd)

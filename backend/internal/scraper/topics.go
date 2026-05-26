@@ -17,7 +17,7 @@ import (
 
 var CategoryNames = map[int]string{
 	1: "Film & Animation", 10: "Music", 17: "Sports", 20: "Gaming",
-	22: "People & Blogs", 23: "Comedy", 24: "Entertainment",
+	22: "People & Blogs", 24: "Entertainment",
 	25: "News & Politics", 26: "How-to & Style", 28: "Science & Tech",
 }
 
@@ -29,19 +29,31 @@ type topicCluster struct {
 }
 
 func RunClusterTopics(ctx context.Context, apiKey string, vs *store.VideoStore, ts *store.TopicStore) error {
-	log.Println("Fetching recent videos for topic clustering...")
+	log.Println("Fetching videos not yet topic-clustered...")
 
-	since := time.Now().Add(-24 * time.Hour)
-	videos, err := vs.GetTrending(ctx, since, nil, 200)
+	videos, err := vs.GetUnclustered(ctx)
 	if err != nil {
-		return fmt.Errorf("fetch videos: %w", err)
+		return fmt.Errorf("fetch unclustered videos: %w", err)
 	}
 	if len(videos) == 0 {
-		log.Println("No recent videos. Skipping.")
+		log.Println("No unclustered videos. Skipping.")
 		return nil
 	}
 
 	log.Printf("Found %d videos. Clustering...", len(videos))
+
+	existingTopics, err := ts.ListAllTopics(ctx)
+	if err != nil {
+		return fmt.Errorf("list existing topics: %w", err)
+	}
+	existingCatalog := formatExistingGenres(existingTopics)
+	canonicalNames := make(map[string]string, len(existingTopics))
+	for _, t := range existingTopics {
+		canonicalNames[strings.ToLower(t.Name)] = t.Name
+	}
+	if len(existingTopics) > 0 {
+		log.Printf("Loaded %d existing micro-genres for reuse", len(existingTopics))
+	}
 
 	batchSize := 50
 	allTopics := map[string]*struct {
@@ -67,13 +79,17 @@ func RunClusterTopics(ctx context.Context, apiKey string, vs *store.VideoStore, 
 		}
 
 		log.Printf("  Processing batch %d...", (i/batchSize)+1)
-		clusters, err := callDeepSeek(ctx, apiKey, strings.Join(lines, "\n"), len(batch))
+		clusters, err := callDeepSeek(ctx, apiKey, strings.Join(lines, "\n"), len(batch), existingCatalog)
 		if err != nil {
 			log.Printf("  LLM error: %v", err)
 			continue
 		}
 
-		for _, c := range clusters {
+		for i := range clusters {
+			if canon, ok := canonicalNames[strings.ToLower(clusters[i].Name)]; ok {
+				clusters[i].Name = canon
+			}
+			c := clusters[i]
 			slug := slugify(c.Name)
 			existing, ok := allTopics[slug]
 			var vids []int64
@@ -126,24 +142,48 @@ func RunClusterTopics(ctx context.Context, apiKey string, vs *store.VideoStore, 
 	return nil
 }
 
-func callDeepSeek(ctx context.Context, apiKey, videoList string, count int) ([]topicCluster, error) {
+func formatExistingGenres(topics []model.Topic) string {
+	if len(topics) == 0 {
+		return "(none yet — you may define new micro-genres)"
+	}
+	var b strings.Builder
+	for _, t := range topics {
+		desc := ""
+		if t.Description != nil {
+			desc = *t.Description
+		}
+		fmt.Fprintf(&b, "- %q", t.Name)
+		if desc != "" {
+			fmt.Fprintf(&b, ": %s", desc)
+		}
+		fmt.Fprintf(&b, " (color: %s)\n", t.Color)
+	}
+	return b.String()
+}
+
+func callDeepSeek(ctx context.Context, apiKey, videoList string, count int, existingCatalog string) ([]topicCluster, error) {
 	body := map[string]interface{}{
-		"model":       "deepseek-v4-flash",
-		"temperature": 0.3,
+		"model":           "deepseek-v4-flash",
+		"temperature":     0.3,
 		"response_format": map[string]string{"type": "json_object"},
 		"messages": []map[string]string{
 			{
 				"role": "system",
-				"content": `You analyze YouTube trending video titles and tags to discover micro-genres.
+				"content": `You analyze YouTube trending video titles and tags to assign micro-genres.
 Return JSON: { "genres": [{ "name": "Short catchy name (2-4 words)", "description": "One sentence description", "color": "#hex color for UI", "video_indices": [indices] }] }
-- Create 5-8 distinct micro-genres
-- Every video must be assigned to exactly one genre
-- Names should be specific and trendy (e.g. "Cozy Farming Sims" not "Gaming")
-- Colors should be vibrant and distinct from each other`,
+
+Existing micro-genres (catalog):
+` + existingCatalog + `
+Rules:
+- Assign every video to exactly one genre
+- Prefer existing genres: if a video fits an existing genre, use that genre's exact name (character-for-character) and color
+- Only add a new genre when no existing genre fits the video
+- When adding new genres, keep names specific and trendy (e.g. "Cozy Farming Sims" not "Gaming"); use vibrant distinct colors
+- Do not create near-duplicate names for the same concept as an existing genre (synonyms, plural tweaks, reorderings)`,
 			},
 			{
 				"role":    "user",
-				"content": fmt.Sprintf("Cluster these %d trending YouTube videos into micro-genres:\n\n%s", count, videoList),
+				"content": fmt.Sprintf("Assign these %d trending YouTube videos to micro-genres (reuse existing names when they fit):\n\n%s", count, videoList),
 			},
 		},
 	}

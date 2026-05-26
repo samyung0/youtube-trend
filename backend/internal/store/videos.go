@@ -43,6 +43,24 @@ func (s *VideoStore) GetTrending(ctx context.Context, since time.Time, categoryI
 	return scanVideos(rows)
 }
 
+// GetUnclustered returns videos that have no row in topic_videos yet.
+func (s *VideoStore) GetUnclustered(ctx context.Context) ([]model.Video, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT v.id, v.youtube_id, v.title, v.channel_name, v.channel_id, v.channel_db_id,
+		       v.thumbnail_url, v.view_count, v.like_count, v.comment_count,
+		       v.category_id, v.tags, v.published_at, v.duration, v.created_at, v.updated_at
+		FROM videos v
+		LEFT JOIN topic_videos tv ON tv.video_id = v.id
+		WHERE tv.video_id IS NULL
+		ORDER BY v.view_count DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("get unclustered videos: %w", err)
+	}
+	defer rows.Close()
+
+	return scanVideos(rows)
+}
+
 func (s *VideoStore) UpsertVideo(ctx context.Context, v *model.Video) (int64, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx, `

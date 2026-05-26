@@ -18,6 +18,30 @@ func NewTopicStore(pool *pgxpool.Pool) *TopicStore {
 	return &TopicStore{pool: pool}
 }
 
+func (s *TopicStore) ListAllTopics(ctx context.Context) ([]model.Topic, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, slug, description, color, parent_category, snapshot_date::text, created_at
+		FROM topics
+		ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("list all topics: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]model.Topic, 0)
+	for rows.Next() {
+		var t model.Topic
+		if err := rows.Scan(
+			&t.ID, &t.Name, &t.Slug, &t.Description, &t.Color,
+			&t.ParentCategory, &t.SnapshotDate, &t.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan topic: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 func (s *TopicStore) GetTopics(ctx context.Context, since time.Time) ([]model.Topic, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT t.id, t.name, t.slug, t.description, t.color,
