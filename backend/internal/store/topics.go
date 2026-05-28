@@ -89,7 +89,8 @@ func (s *TopicStore) GetVideosByTopic(ctx context.Context, topicID int64, limit 
 	rows, err := s.pool.Query(ctx, `
 		SELECT v.id, v.youtube_id, v.title, v.channel_name, v.channel_id, v.channel_db_id,
 		       v.thumbnail_url, v.view_count, v.like_count, v.comment_count,
-		       v.category_id, v.tags, v.published_at, v.duration, v.created_at, v.updated_at
+		       v.category_id, v.tags, v.published_at, v.duration, v.is_short_video,
+		       v.created_at, v.updated_at
 		FROM videos v
 		JOIN topic_videos tv ON tv.video_id = v.id
 		WHERE tv.topic_id = $1
@@ -140,7 +141,7 @@ func (s *TopicStore) UpsertTopic(ctx context.Context, t *model.Topic) (int64, er
 		ON CONFLICT (slug) DO UPDATE SET
 			name            = EXCLUDED.name,
 			description     = EXCLUDED.description,
-			color           = EXCLUDED.color,
+			color           = COALESCE(NULLIF(EXCLUDED.color, ''), topics.color),
 			parent_category = EXCLUDED.parent_category,
 			snapshot_date   = EXCLUDED.snapshot_date
 		RETURNING id`,

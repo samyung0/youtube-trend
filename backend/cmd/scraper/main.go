@@ -57,6 +57,6 @@ func main() {
 		// scraper.RunAnalyzeThumbnails(ctx, vs, as)
 		scraper.RunTrackChannels(ctx, yt, cs)
 	default:
-		log.Fatalf("Unknown command: %s. Use: fetch, topics, analyze, channels, all", cmd)
+		log.Fatalf("Unknown command: %s. Use: fetch, topics, channels, all", cmd)
 	}
 }

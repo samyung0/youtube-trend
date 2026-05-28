@@ -67,34 +67,58 @@ type YTChannelInfo struct {
 }
 
 func (c *YouTubeClient) FetchTrending(categoryID *int, region string, maxResults int) ([]YTVideo, error) {
-	params := url.Values{
-		"part":       {"snippet,statistics,contentDetails"},
-		"chart":      {"mostPopular"},
-		"regionCode": {region},
-		"maxResults": {strconv.Itoa(maxResults)},
-		"key":        {c.apiKey},
-	}
-	if categoryID != nil && *categoryID > 0 {
-		params.Set("videoCategoryId", strconv.Itoa(*categoryID))
+	const pageSize = 50
+	var all []YTVideo
+	pageToken := ""
+
+	for len(all) < maxResults {
+		limit := pageSize
+		if remaining := maxResults - len(all); remaining < limit {
+			limit = remaining
+		}
+
+		params := url.Values{
+			"part":       {"snippet,statistics,contentDetails"},
+			"chart":      {"mostPopular"},
+			"regionCode": {region},
+			"maxResults": {strconv.Itoa(limit)},
+			"key":        {c.apiKey},
+		}
+		if pageToken != "" {
+			params.Set("pageToken", pageToken)
+		}
+		if categoryID != nil && *categoryID > 0 {
+			params.Set("videoCategoryId", strconv.Itoa(*categoryID))
+		}
+
+		resp, err := c.httpClient.Get("https://www.googleapis.com/youtube/v3/videos?" + params.Encode())
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			return nil, fmt.Errorf("youtube API error: %d", resp.StatusCode)
+		}
+
+		var result struct {
+			Items         []YTVideo `json:"items"`
+			NextPageToken string    `json:"nextPageToken"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		resp.Body.Close()
+
+		all = append(all, result.Items...)
+		if result.NextPageToken == "" || len(result.Items) == 0 {
+			break
+		}
+		pageToken = result.NextPageToken
 	}
 
-	resp, err := c.httpClient.Get("https://www.googleapis.com/youtube/v3/videos?" + params.Encode())
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("youtube API error: %d", resp.StatusCode)
-	}
-
-	var result struct {
-		Items []YTVideo `json:"items"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-	return result.Items, nil
+	return all, nil
 }
 
 func (c *YouTubeClient) FetchChannels(channelIDs []string) ([]YTChannelInfo, error) {

@@ -17,6 +17,7 @@ type Video struct {
 	Tags         []string  `json:"tags" db:"tags"`
 	PublishedAt  *time.Time `json:"published_at,omitempty" db:"published_at"`
 	Duration     string    `json:"duration" db:"duration"`
+	IsShortVideo bool      `json:"is_short_video" db:"is_short_video"`
 	CreatedAt    time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
 }

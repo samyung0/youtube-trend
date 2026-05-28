@@ -24,8 +24,12 @@ var CategoryNames = map[int]string{
 type topicCluster struct {
 	Name         string `json:"name"`
 	Description  string `json:"description"`
-	Color        string `json:"color"`
 	VideoIndices []int  `json:"video_indices"`
+}
+
+var topicColors = []string{
+	"#6366f1", "#ec4899", "#10b981", "#f59e0b", "#8b5cf6",
+	"#06b6d4", "#ef4444", "#84cc16", "#f97316", "#14b8a6",
 }
 
 func RunClusterTopics(ctx context.Context, apiKey string, vs *store.VideoStore, ts *store.TopicStore) error {
@@ -42,121 +46,154 @@ func RunClusterTopics(ctx context.Context, apiKey string, vs *store.VideoStore, 
 
 	log.Printf("Found %d videos. Clustering...", len(videos))
 
-	existingTopics, err := ts.ListAllTopics(ctx)
-	if err != nil {
-		return fmt.Errorf("list existing topics: %w", err)
-	}
-	existingCatalog := formatExistingGenres(existingTopics)
-	canonicalNames := make(map[string]string, len(existingTopics))
-	for _, t := range existingTopics {
-		canonicalNames[strings.ToLower(t.Name)] = t.Name
-	}
-	if len(existingTopics) > 0 {
-		log.Printf("Loaded %d existing micro-genres for reuse", len(existingTopics))
-	}
-
 	batchSize := 50
-	allTopics := map[string]*struct {
-		cluster  topicCluster
-		parent   string
-		videoIDs []int64
-	}{}
+	totalSaved := 0
 
 	for i := 0; i < len(videos); i += batchSize {
 		end := i + batchSize
 		if end > len(videos) {
 			end = len(videos)
 		}
-		batch := videos[i:end]
+		batchNum := (i / batchSize) + 1
+
+		existingTopics, err := ts.ListAllTopics(ctx)
+		if err != nil {
+			return fmt.Errorf("list existing topics: %w", err)
+		}
+		existingCatalog, canonicalNames, existingBySlug := topicLookup(existingTopics)
+		log.Printf("  Batch %d: %d videos, %d existing topics in catalog", batchNum, end-i, len(existingTopics))
 
 		var lines []string
-		for j, v := range batch {
+		for j, v := range videos[i:end] {
 			tags := v.Tags
 			if len(tags) > 8 {
 				tags = tags[:8]
 			}
-			lines = append(lines, fmt.Sprintf("[%d] \"%s\" tags: %s", i+j, v.Title, strings.Join(tags, ", ")))
+			lines = append(lines, fmt.Sprintf("[%d] \"%s\" tags: %s", j, v.Title, strings.Join(tags, ", ")))
 		}
 
-		log.Printf("  Processing batch %d...", (i/batchSize)+1)
-		clusters, err := callDeepSeek(ctx, apiKey, strings.Join(lines, "\n"), len(batch), existingCatalog)
+		clusters, err := callDeepSeek(ctx, apiKey, strings.Join(lines, "\n"), end-i, existingCatalog)
 		if err != nil {
-			log.Printf("  LLM error: %v", err)
+			log.Printf("  Batch %d LLM error: %v", batchNum, err)
 			continue
 		}
 
-		for i := range clusters {
-			if canon, ok := canonicalNames[strings.ToLower(clusters[i].Name)]; ok {
-				clusters[i].Name = canon
-			}
-			c := clusters[i]
-			slug := slugify(c.Name)
-			existing, ok := allTopics[slug]
-			var vids []int64
-			for _, idx := range c.VideoIndices {
-				if idx >= 0 && idx < len(videos) {
-					vids = append(vids, videos[idx].ID)
-				}
-			}
+		saved, err := saveBatchTopics(ctx, ts, clusters, videos[i:end], canonicalNames, existingBySlug)
+		if err != nil {
+			log.Printf("  Batch %d save error: %v", batchNum, err)
+			continue
+		}
+		totalSaved += saved
+		log.Printf("  Batch %d saved %d topic assignments", batchNum, saved)
+	}
 
-			parent := ""
-			if len(vids) > 0 {
-				catID := videos[c.VideoIndices[0]].CategoryID
-				if name, ok := CategoryNames[catID]; ok {
-					parent = name
-				}
-			}
+	log.Printf("Topic clustering complete. Linked %d videos across batches.", totalSaved)
+	return nil
+}
 
-			if ok {
-				existing.videoIDs = append(existing.videoIDs, vids...)
-			} else {
-				allTopics[slug] = &struct {
-					cluster  topicCluster
-					parent   string
-					videoIDs []int64
-				}{cluster: c, parent: parent, videoIDs: vids}
+type batchTopic struct {
+	cluster  topicCluster
+	parent   string
+	videoIDs []int64
+}
+
+func topicLookup(topics []model.Topic) (catalog string, canonicalNames map[string]string, bySlug map[string]model.Topic) {
+	canonicalNames = make(map[string]string, len(topics))
+	bySlug = make(map[string]model.Topic, len(topics))
+	for _, t := range topics {
+		canonicalNames[strings.ToLower(t.Name)] = t.Name
+		bySlug[t.Slug] = t
+	}
+	return formatExistingTopics(topics), canonicalNames, bySlug
+}
+
+func saveBatchTopics(
+	ctx context.Context,
+	ts *store.TopicStore,
+	clusters []topicCluster,
+	videos []model.Video,
+	canonicalNames map[string]string,
+	existingBySlug map[string]model.Topic,
+) (int, error) {
+	batchTopics := make(map[string]*batchTopic)
+
+	for ci := range clusters {
+		if canon, ok := canonicalNames[strings.ToLower(clusters[ci].Name)]; ok {
+			clusters[ci].Name = canon
+		}
+		c := clusters[ci]
+		slug := slugify(c.Name)
+		if slug == "" {
+			continue
+		}
+
+		var vids []int64
+		for _, idx := range c.VideoIndices {
+			if idx >= 0 && idx < len(videos) {
+				vids = append(vids, videos[idx].ID)
 			}
+		}
+		if len(vids) == 0 {
+			continue
+		}
+
+		parent := ""
+		idx := c.VideoIndices[0]
+		if idx >= 0 && idx < len(videos) {
+			if name, ok := CategoryNames[videos[idx].CategoryID]; ok {
+				parent = name
+			}
+		}
+
+		if existing, ok := batchTopics[slug]; ok {
+			existing.videoIDs = append(existing.videoIDs, vids...)
+		} else {
+			batchTopics[slug] = &batchTopic{cluster: c, parent: parent, videoIDs: vids}
 		}
 	}
 
-	log.Printf("\nDiscovered %d topics:", len(allTopics))
-	for slug, t := range allTopics {
-		log.Printf("  - %s (%d videos)", t.cluster.Name, len(t.videoIDs))
+	linked := 0
+	snapshotDate := time.Now().Format("2006-01-02")
+	for slug, t := range batchTopics {
+		color := topicColorForSlug(slug)
+		if existing, ok := existingBySlug[slug]; ok {
+			color = existing.Color
+		}
 		topic := &model.Topic{
 			Name:           t.cluster.Name,
 			Slug:           slug,
 			Description:    &t.cluster.Description,
-			Color:          t.cluster.Color,
+			Color:          color,
 			ParentCategory: &t.parent,
-			SnapshotDate:   time.Now().Format("2006-01-02"),
+			SnapshotDate:   snapshotDate,
 		}
 		topicID, err := ts.UpsertTopic(ctx, topic)
 		if err != nil {
-			log.Printf("    Error: %v", err)
-			continue
+			return linked, fmt.Errorf("upsert %q: %w", slug, err)
 		}
-		ts.LinkTopicVideos(ctx, topicID, t.videoIDs)
+		if err := ts.LinkTopicVideos(ctx, topicID, t.videoIDs); err != nil {
+			return linked, fmt.Errorf("link %q: %w", slug, err)
+		}
+		linked += len(t.videoIDs)
 	}
-
-	log.Println("Topic clustering complete.")
-	return nil
+	return linked, nil
 }
 
-func formatExistingGenres(topics []model.Topic) string {
+func formatExistingTopics(topics []model.Topic) string {
 	if len(topics) == 0 {
-		return "(none yet — you may define new micro-genres)"
+		return "(none yet — you may define new topics)"
 	}
 	var b strings.Builder
 	for _, t := range topics {
 		desc := ""
-		if t.Description != nil {
-			desc = *t.Description
-		}
+		// if t.Description != nil {
+		// 	desc = *t.Description
+		// }
 		fmt.Fprintf(&b, "- %q", t.Name)
 		if desc != "" {
 			fmt.Fprintf(&b, ": %s", desc)
 		}
-		fmt.Fprintf(&b, " (color: %s)\n", t.Color)
+		b.WriteByte('\n')
 	}
 	return b.String()
 }
@@ -169,21 +206,20 @@ func callDeepSeek(ctx context.Context, apiKey, videoList string, count int, exis
 		"messages": []map[string]string{
 			{
 				"role": "system",
-				"content": `You analyze YouTube trending video titles and tags to assign micro-genres.
-Return JSON: { "genres": [{ "name": "Short catchy name (2-4 words)", "description": "One sentence description", "color": "#hex color for UI", "video_indices": [indices] }] }
+				"content": `You analyze YouTube trending video titles and tags to extract topics. A topic can be a person, a name, a location, a thing, etc., but it should be a concrete subject rather than a concept. Remove the actions/adjectives/fillers from the topics. Examples: rather than "Kevin Hart Roast", it is just "Kevin Hart". Rather than "Cruise News and Tips", it should be just "Cruise" Rather than "Roblox Gameplay", it should just be "Roblox"
+Return JSON: { "topic": [{ "name": "A subject (1-3 words)", "description": "One sentence description", "video_indices": [indices] }] }
 
-Existing micro-genres (catalog):
+Existing topics:
 ` + existingCatalog + `
 Rules:
-- Assign every video to exactly one genre
-- Prefer existing genres: if a video fits an existing genre, use that genre's exact name (character-for-character) and color
-- Only add a new genre when no existing genre fits the video
-- When adding new genres, keep names specific and trendy (e.g. "Cozy Farming Sims" not "Gaming"); use vibrant distinct colors
-- Do not create near-duplicate names for the same concept as an existing genre (synonyms, plural tweaks, reorderings)`,
+- Assign every video to exactly one topic
+- Prefer existing topics: if a video fits an existing topic, use that topic's exact name (character-for-character)
+- Only add a new topic when no existing topic fits the video
+- Focus on the content of the video rather than the channel or creator.`,
 			},
 			{
 				"role":    "user",
-				"content": fmt.Sprintf("Assign these %d trending YouTube videos to micro-genres (reuse existing names when they fit):\n\n%s", count, videoList),
+				"content": fmt.Sprintf("Assign these %d trending YouTube videos to topics (reuse existing names when they fit):\n\n%s", count, videoList),
 			},
 		},
 	}
@@ -214,12 +250,20 @@ Rules:
 	}
 
 	var parsed struct {
-		Genres []topicCluster `json:"genres"`
+		Topics []topicCluster `json:"topic"`
 	}
 	if err := json.Unmarshal([]byte(result.Choices[0].Message.Content), &parsed); err != nil {
 		return nil, err
 	}
-	return parsed.Genres, nil
+	return parsed.Topics, nil
+}
+
+func topicColorForSlug(slug string) string {
+	var h uint32
+	for i := 0; i < len(slug); i++ {
+		h = h*31 + uint32(slug[i])
+	}
+	return topicColors[h%uint32(len(topicColors))]
 }
 
 var nonAlpha = regexp.MustCompile(`[^a-z0-9]+`)

@@ -149,7 +149,8 @@ func (s *AnalysisStore) GetUnanalyzedVideos(ctx context.Context, since time.Time
 	rows, err := s.pool.Query(ctx, `
 		SELECT v.id, v.youtube_id, v.title, v.channel_name, v.channel_id, v.channel_db_id,
 		       v.thumbnail_url, v.view_count, v.like_count, v.comment_count,
-		       v.category_id, v.tags, v.published_at, v.duration, v.created_at, v.updated_at
+		       v.category_id, v.tags, v.published_at, v.duration, v.is_short_video,
+		       v.created_at, v.updated_at
 		FROM videos v
 		LEFT JOIN thumbnail_analyses a ON a.video_id = v.id
 		WHERE a.id IS NULL AND v.created_at >= $1

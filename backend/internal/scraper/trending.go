@@ -10,12 +10,12 @@ import (
 	"github.com/thumbtrend/backend/internal/store"
 )
 
-var CategoryIDs = []int{0, 1, 10, 17, 20, 22, 23, 24, 25, 26, 28}
+var CategoryIDs = []int{0, 20, 22, 24, 28}
 
 const (
-	FetchCount = 80
-	MaxValid   = 50
-	Region     = "US"
+	FetchCountAll      = 800
+	FetchCountCategory = 400
+	Region             = "US"
 )
 
 func RunFetchTrending(ctx context.Context, yt *YouTubeClient, vs *store.VideoStore, cs *store.ChannelStore) error {
@@ -35,7 +35,12 @@ func RunFetchTrending(ctx context.Context, yt *YouTubeClient, vs *store.VideoSto
 			catPtr = &c
 		}
 
-		raw, err := yt.FetchTrending(catPtr, Region, FetchCount)
+		fetchCount := FetchCountCategory
+		if catID == 0 {
+			fetchCount = FetchCountAll
+		}
+
+		raw, err := yt.FetchTrending(catPtr, Region, fetchCount)
 		if err != nil {
 			log.Printf("  Error fetching %s: %v", catLabel, err)
 			continue
@@ -53,7 +58,7 @@ func RunFetchTrending(ctx context.Context, yt *YouTubeClient, vs *store.VideoSto
 		skipped := 0
 
 		for _, v := range raw {
-			if len(validated) >= MaxValid {
+			if len(validated) >= fetchCount {
 				break
 			}
 			thumbURL := v.ValidateThumbnail()
@@ -104,6 +109,7 @@ func RunFetchTrending(ctx context.Context, yt *YouTubeClient, vs *store.VideoSto
 				Tags:         v.Snippet.Tags,
 				PublishedAt:  &pubTime,
 				Duration:     v.ContentDetails.Duration,
+				IsShortVideo: IsShortVideo(v.ContentDetails.Duration),
 			}
 			if len(vid.Tags) > 20 {
 				vid.Tags = vid.Tags[:20]

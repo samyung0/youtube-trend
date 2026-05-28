@@ -22,7 +22,7 @@ func (s *VideoStore) GetTrending(ctx context.Context, since time.Time, categoryI
 	query := `
 		SELECT id, youtube_id, title, channel_name, channel_id, channel_db_id,
 		       thumbnail_url, view_count, like_count, comment_count,
-		       category_id, tags, published_at, duration, created_at, updated_at
+		       category_id, tags, published_at, duration, is_short_video, created_at, updated_at
 		FROM videos
 		WHERE created_at >= $1`
 	args := []any{since}
@@ -48,10 +48,11 @@ func (s *VideoStore) GetUnclustered(ctx context.Context) ([]model.Video, error) 
 	rows, err := s.pool.Query(ctx, `
 		SELECT v.id, v.youtube_id, v.title, v.channel_name, v.channel_id, v.channel_db_id,
 		       v.thumbnail_url, v.view_count, v.like_count, v.comment_count,
-		       v.category_id, v.tags, v.published_at, v.duration, v.created_at, v.updated_at
+		       v.category_id, v.tags, v.published_at, v.duration, v.is_short_video,
+		       v.created_at, v.updated_at
 		FROM videos v
 		LEFT JOIN topic_videos tv ON tv.video_id = v.id
-		WHERE tv.video_id IS NULL
+		WHERE tv.video_id IS NULL AND v.is_short_video = false
 		ORDER BY v.view_count DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("get unclustered videos: %w", err)
@@ -66,20 +67,23 @@ func (s *VideoStore) UpsertVideo(ctx context.Context, v *model.Video) (int64, er
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO videos (youtube_id, title, channel_name, channel_id, channel_db_id,
 		                     thumbnail_url, view_count, like_count, comment_count,
-		                     category_id, tags, published_at, duration, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW(),NOW())
+		                     category_id, tags, published_at, duration, is_short_video,
+		                     created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),NOW())
 		ON CONFLICT (youtube_id) DO UPDATE SET
-			title          = EXCLUDED.title,
-			view_count     = EXCLUDED.view_count,
-			like_count     = EXCLUDED.like_count,
-			comment_count  = EXCLUDED.comment_count,
-			thumbnail_url  = EXCLUDED.thumbnail_url,
-			tags           = EXCLUDED.tags,
-			updated_at     = NOW()
+			title           = EXCLUDED.title,
+			view_count      = EXCLUDED.view_count,
+			like_count      = EXCLUDED.like_count,
+			comment_count   = EXCLUDED.comment_count,
+			thumbnail_url   = EXCLUDED.thumbnail_url,
+			tags            = EXCLUDED.tags,
+			duration        = EXCLUDED.duration,
+			is_short_video  = EXCLUDED.is_short_video,
+			updated_at      = NOW()
 		RETURNING id`,
 		v.YouTubeID, v.Title, v.ChannelName, v.ChannelID, v.ChannelDBID,
 		v.ThumbnailURL, v.ViewCount, v.LikeCount, v.CommentCount,
-		v.CategoryID, v.Tags, v.PublishedAt, v.Duration,
+		v.CategoryID, v.Tags, v.PublishedAt, v.Duration, v.IsShortVideo,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("upsert video: %w", err)
@@ -129,7 +133,7 @@ func (s *VideoStore) GetByID(ctx context.Context, id int64) (*model.Video, error
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, youtube_id, title, channel_name, channel_id, channel_db_id,
 		       thumbnail_url, view_count, like_count, comment_count,
-		       category_id, tags, published_at, duration, created_at, updated_at
+		       category_id, tags, published_at, duration, is_short_video, created_at, updated_at
 		FROM videos WHERE id = $1`, id,
 	)
 	if err != nil {
@@ -160,7 +164,8 @@ func scanVideos(rows pgx.Rows) ([]model.Video, error) {
 		if err := rows.Scan(
 			&v.ID, &v.YouTubeID, &v.Title, &v.ChannelName, &v.ChannelID, &v.ChannelDBID,
 			&v.ThumbnailURL, &v.ViewCount, &v.LikeCount, &v.CommentCount,
-			&v.CategoryID, &v.Tags, &v.PublishedAt, &v.Duration, &v.CreatedAt, &v.UpdatedAt,
+			&v.CategoryID, &v.Tags, &v.PublishedAt, &v.Duration, &v.IsShortVideo,
+			&v.CreatedAt, &v.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan video: %w", err)
 		}
